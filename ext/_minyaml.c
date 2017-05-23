@@ -179,6 +179,8 @@ static PyObject* _match_builder(struct MinYamlBuilders *builder,
       Py_XDECREF(builder->py_match);
       builder->py_match = PyObject_CallMethod(builder->py_resolver,
                                               "match", "s", value);
+      if (!builder->py_match)
+        return NULL;
       if (builder->py_match == Py_None)
         Py_RETURN_FALSE;
       else
@@ -292,10 +294,16 @@ static PyObject* _to_int(struct MinYamlBuilders *self, char *value, size_t lengt
   cur = _ovector_at(self, value, 0);
   if (cur)
     {
-      long val;
       _remove_digit_separator(cur, _ovector_len_at(self, 0), '_');
+      return PyLong_FromString(cur, NULL, 8);
+    }
+  cur = _ovector_at(self, value, 1);
+  if (cur)
+    {
+      long val;
+      _remove_digit_separator(cur, _ovector_len_at(self, 1), '_');
       val = atol(cur);
-      cur = _ovector_at(self, value, 1);
+      cur = _ovector_at(self, value, 2);
       while (cur)
         {
           val = val * 60. + atol(++cur);
@@ -468,20 +476,20 @@ static int _init_implicit_builders(void)
   if (!builders)
     return 0;
   builders = _new_c_builder(YAML_TAG_TRUE,
-                          "^(y|Y|yes|Yes|YES"
+                          "^(yes|Yes|YES"
                           "|true|True|TRUE"
                           "|on|On|ON)$", _to_true, builders);
   if (!builders)
     return 0;
   builders = _new_c_builder(YAML_TAG_FALSE,
-                          "^(n|N|no|No|NO"
+                          "^(no|No|NO"
                           "|false|False|FALSE"
                           "|off|Off|OFF)$", _to_false, builders);
   if (!builders)
     return 0;
   builders = _new_c_builder(YAML_TAG_INT,
                           "^[-+]?0b[0-1_]+$" /* (base 2) */
-                          "|^[-+]?0[0-7_]+$" /* (base 8) */
+                          "|^([-+]?0[0-7_]+)$" /* (base 8) */
                           "|^[-+]?(?:0|[1-9][0-9_]*)$" /* (base 10) */
                           "|^[-+]?0x[0-9a-fA-F_]+$" /* (base 16) */
                           "|^([-+]?[1-9][0-9_]*)((?::[0-5]?[0-9])+)$" /*  (base 60) */,
@@ -492,7 +500,7 @@ static int _init_implicit_builders(void)
     (YAML_TAG_FLOAT,
      "^[-+]?(?:[0-9][0-9_]*)?\\.[0-9_]*(?:[eE][-+][0-9]+)?$" /* (base 10) */
      "|^([-+]?[0-9][0-9_]*)((?::[0-5]?[0-9])+)(\\.[0-9_]*)$" /*  (base 60) */
-     "|^[-+]?\\.(inf|Inf|INF)$" /* (infinity) */
+     "|^([-+]?\\.inf|Inf|INF)$" /* (infinity) */
      "|^\\.(nan|NaN|NAN)$" /* (not a number) */, _to_float, builders);
   if (!builders)
     return 0;
@@ -580,6 +588,12 @@ static PyObject* _build_scalar(yaml_event_t *event,
 {
   struct MinYamlBuilders *builder = _match_tag(builders,
                                                (const char*)event->data.scalar.tag);
+  if ((const char*)event->data.scalar.tag && !builder)
+    {
+      PyErr_Format(PyExc_TypeError, "No constructor for tag %s",
+                   event->data.scalar.tag);
+      return NULL;
+    }
 
   if (!builder)
     for (builder = builders; builder; builder = builder->next)
@@ -644,23 +658,6 @@ static PyObject* _build_custom(yaml_parser_t *parser, const char *tag,
                                struct MinYamlBuilders *builders,
                                PyObject *source);
 
-static PyObject* _build_key(yaml_parser_t *parser, yaml_event_t *event,
-                            struct MinYamlBuilders *builders)
-{
-  switch (event->type)
-    {
-    case YAML_SCALAR_EVENT:
-#if PY_MAJOR_VERSION > 2
-      return PyUnicode_FromString((const char*)event->data.scalar.value);
-#else
-      return PyString_FromString((const char*)event->data.scalar.value);
-#endif
-    default:
-      PyErr_SetString(PyExc_SyntaxError, "scalar event awaited for key");
-      return NULL;
-    }
-}
-
 static PyObject* _build_value(yaml_parser_t *parser, yaml_event_t *event,
                               struct MinYamlBuilders *builders,
                               PyObject *aliases)
@@ -699,7 +696,7 @@ static PyObject* _build_value(yaml_parser_t *parser, yaml_event_t *event,
     case YAML_ALIAS_EVENT:
       return _load_alias(aliases, (const char*)event->data.alias.anchor);
     default:
-      PyErr_SetString(PyExc_SyntaxError, "start, scalar or alias event awaited");
+      PyErr_SetString(PyExc_SyntaxError, "collection, scalar or alias event awaited");
       return NULL;
     }
 }
@@ -800,7 +797,7 @@ static PyObject* _build_pairs(yaml_parser_t *parser,
                 goto error;
               if (status == BLOCK_PROCEED)
                 {
-                  key = _build_key(parser, &event, builders);
+                  key = _build_value(parser, &event, builders, aliases);
                   if (!key)
                     {
                       yaml_event_delete(&event);
@@ -879,9 +876,9 @@ static PyObject* _build_pairs(yaml_parser_t *parser,
 static int _is_key_merge(PyObject *key)
 {
 #if PY_MAJOR_VERSION > 2
-  const char *value = PyUnicode_AsUTF8(key);
+  const char *value = PyUnicode_Check(key) ? PyUnicode_AsUTF8(key) : NULL;
 #else
-  const char *value = PyString_AS_STRING(key);
+  const char *value = PyString_Check(key) ? PyString_AS_STRING(key) : NULL;
 #endif
   return (value && value[0] == '<' && value[1] == '<' && value[2] == '\0');
 }
@@ -908,7 +905,7 @@ static PyObject* _build_map(yaml_parser_t *parser,
 
           if (!key)
             {
-              if (!(key = _build_key(parser, &event, builders)))
+              if (!(key = _build_value(parser, &event, builders, aliases)))
                 {
                   yaml_event_delete(&event);
                   goto error;
