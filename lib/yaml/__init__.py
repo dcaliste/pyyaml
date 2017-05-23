@@ -16,6 +16,12 @@ try:
 except ImportError:
     __with_libyaml__ = False
 
+try:
+    from _minyaml import MinLoader
+    __with_minyaml__ = True
+except ImportError:
+    __with_minyaml__ = False
+
 def scan(stream, Loader=Loader):
     """
     Scan a YAML stream and produce scanning tokens.

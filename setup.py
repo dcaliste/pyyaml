@@ -52,6 +52,25 @@ int main(void) {
     return 0;
 }
 """
+LIBMIN_CHECK = """
+#include <pcre.h>
+#include <yaml.h>
+
+int main(void) {
+    pcre *regexp;
+    const char *error;
+    int offset;
+    yaml_parser_t parser;
+
+    regexp = pcre_compile("^$", 0, &error, &offset, NULL);
+    pcre_free(regexp);
+
+    yaml_parser_initialize(&parser);
+    yaml_parser_delete(&parser);
+
+    return 0;
+}
+"""
 
 
 import sys, os.path, platform
@@ -333,6 +352,9 @@ if __name__ == '__main__':
             Extension('_yaml', ['ext/_yaml.pyx'],
                 'libyaml', "LibYAML bindings", LIBYAML_CHECK,
                 libraries=['yaml']),
+            Extension('_minyaml', ['ext/_minyaml.c'],
+                          'minyaml', "minimal C loader", LIBMIN_CHECK,
+                          libraries=['yaml', 'pcre']),
         ],
 
         distclass=Distribution,
