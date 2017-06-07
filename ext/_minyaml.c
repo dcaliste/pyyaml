@@ -892,6 +892,7 @@ static PyObject* _build_map(yaml_parser_t *parser,
   PyObject *key = NULL;
   enum MinYamlParserStatus status;
   int isSet = 1;
+  Py_ssize_t i;
 
   mapping = PyDict_New();
   do
@@ -924,7 +925,7 @@ static PyObject* _build_map(yaml_parser_t *parser,
               if (_is_key_merge(key))
                 {
                   if (PyList_Check(value))
-                    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(value); i++)
+                    for (i = 0; i < PyList_GET_SIZE(value); i++)
                       {
                         if (PyDict_Merge(mapping, PyList_GET_ITEM(value, i), 0) == -1)
                           {
@@ -1078,6 +1079,7 @@ static int _min_yaml_init(MinYamlLoader *self, PyObject *args, PyObject *kwds)
 {
   if (!PyArg_ParseTuple(args, "O", &self->stream))
     return -1;
+  Py_XINCREF(self->stream);
 
   /* Detect if read method is available. */
   if (PyObject_HasAttrString(self->stream, "read"))
@@ -1089,15 +1091,15 @@ static int _min_yaml_init(MinYamlLoader *self, PyObject *args, PyObject *kwds)
   else if (PyUnicode_Check(self->stream))
     {
       Py_ssize_t ln;
+      unsigned char *stream = (unsigned char*)PyUnicode_AsUTF8AndSize(self->stream, &ln);
       yaml_parser_set_input_string
-        (&self->parser, (unsigned char*)PyUnicode_AsUTF8AndSize(self->stream, &ln),
-         (size_t)ln);
+        (&self->parser, stream, (size_t)ln);
     }
 #else
   else if (PyString_Check(self->stream))
     yaml_parser_set_input_string
       (&self->parser, (unsigned char*)PyString_AS_STRING(self->stream),
-       (size_t)PyString_Size(self->stream));
+       (size_t)PyString_GET_SIZE(self->stream));
 #endif
   else
     {
@@ -1173,7 +1175,17 @@ static PyObject* _min_yaml_single_data(MinYamlLoader* self)
   Py_DECREF(valid);
   if (valid == Py_True)
     {
+#if PY_MAJOR_VERSION == 2
+      if (!_init_implicit_builders())
+      {
+        _free_builders(implicitBuilders);
+        return NULL;
+      }
+#endif
       doc = _build_document(&self->parser, implicitBuilders);
+#if PY_MAJOR_VERSION == 2
+      _free_builders(implicitBuilders);
+#endif
       if (!doc)
         return NULL;
     }
